@@ -53,14 +53,14 @@ func TestRead(t *testing.T) {
 							"status": "ACTIVE",
 						},
 						Raw: map[string]any{
-							"id":     "00u1234567890abcdef",
-							"status": "ACTIVE",
+							"id":      "00u1234567890abcdef",
+							"status":  "ACTIVE",
 							"created": "2023-01-15T10:00:00.000Z",
 							"profile": map[string]any{
-								"firstName": "John",
-								"lastName":  "Doe",
-								"email":     "john.doe@example.com",
-								"login":     "john.doe@example.com",
+								"firstName":   "John",
+								"lastName":    "Doe",
+								"email":       "john.doe@example.com",
+								"login":       "john.doe@example.com",
 								"mobilePhone": "+14155551234",
 							},
 						},
@@ -71,8 +71,8 @@ func TestRead(t *testing.T) {
 							"status": "PROVISIONED",
 						},
 						Raw: map[string]any{
-							"id":     "00u9876543210zyxwvu",
-							"status": "PROVISIONED",
+							"id":      "00u9876543210zyxwvu",
+							"status":  "PROVISIONED",
 							"created": "2023-02-20T11:00:00.000Z",
 							"profile": map[string]any{
 								"firstName": "Jane",
@@ -150,8 +150,8 @@ func TestRead(t *testing.T) {
 							"type": "OKTA_GROUP",
 						},
 						Raw: map[string]any{
-							"id":   "00g1234567890abcdef",
-							"type": "OKTA_GROUP",
+							"id":      "00g1234567890abcdef",
+							"type":    "OKTA_GROUP",
 							"created": "2023-01-10T09:00:00.000Z",
 							"profile": map[string]any{
 								"name":        "Engineering",

@@ -16,17 +16,29 @@ const (
 	limitKey   = "limit"
 	limitValue = "200" // Okta maximum per page
 	filterKey  = "filter"
+	sinceKey   = "since"
 )
 
 // Objects supporting incremental sync via lastUpdated filter.
-// Reference: https://developer.okta.com/docs/api/openapi/okta-management/management/tag/User/#tag/User/operation/listUsers
+// Reference: https://developer.okta.com/docs/reference/api/users/#list-users
+// Reference: https://developer.okta.com/docs/reference/api/groups/#list-groups
 //
 //nolint:gochecknoglobals
-var supportIncrementalSync = datautils.NewStringSet(
+var objectsWithLastUpdatedFilter = datautils.NewStringSet(
 	"users",
 	"groups",
 	"apps",
 )
+
+// responseField returns the JSON path for extracting records.
+// Most Okta endpoints return arrays at root level, except domains.
+func responseField(objectName string) string {
+	if objectName == "domains" {
+		return "domains"
+	}
+
+	return ""
+}
 
 // buildReadRequest constructs the HTTP request for read operations.
 // Reference: https://developer.okta.com/docs/api/
@@ -50,12 +62,18 @@ func (c *Connector) buildReadRequest(ctx context.Context, params common.ReadPara
 	// Add pagination limit
 	url.WithQueryParam(limitKey, limitValue)
 
-	// Add incremental sync filter using lastUpdated (ISO 8601 format)
-	// Reference: https://developer.okta.com/docs/api/#filter
-	if supportIncrementalSync.Has(params.ObjectName) && !params.Since.IsZero() {
-		filterValue := "lastUpdated gt \"" +
-			datautils.Time.FormatRFC3339inUTC(params.Since) + "\""
-		url.WithQueryParam(filterKey, filterValue)
+	// Add incremental sync filter based on object type
+	if !params.Since.IsZero() {
+		if params.ObjectName == "logs" {
+			// Logs API uses 'since' query param instead of filter expression
+			// Reference: https://developer.okta.com/docs/reference/api/system-log/#request-parameters
+			url.WithQueryParam(sinceKey, datautils.Time.FormatRFC3339inUTC(params.Since))
+		} else if objectsWithLastUpdatedFilter.Has(params.ObjectName) {
+			// Other objects use lastUpdated filter expression
+			// Reference: https://developer.okta.com/docs/reference/api/users/#list-users-with-a-filter
+			filterValue := "lastUpdated gt \"" + datautils.Time.FormatRFC3339inUTC(params.Since) + "\""
+			url.WithQueryParam(filterKey, filterValue)
+		}
 	}
 
 	return http.NewRequestWithContext(ctx, http.MethodGet, url.String(), nil)
@@ -63,7 +81,6 @@ func (c *Connector) buildReadRequest(ctx context.Context, params common.ReadPara
 
 // parseReadResponse parses the HTTP response from read operations.
 // Okta uses Link headers for pagination (cursor-based).
-// Okta returns an array directly at the root for most endpoints.
 // Reference: https://developer.okta.com/docs/api/#pagination
 func (c *Connector) parseReadResponse(
 	ctx context.Context,
@@ -71,10 +88,9 @@ func (c *Connector) parseReadResponse(
 	request *http.Request,
 	response *common.JSONHTTPResponse,
 ) (*common.ReadResult, error) {
-	// Okta returns array at root level - use empty path ""
 	return common.ParseResult(
 		response,
-		common.ExtractRecordsFromPath(""),
+		common.ExtractRecordsFromPath(responseField(params.ObjectName)),
 		makeNextRecordsURL(response.Headers),
 		common.GetMarshaledData,
 		params.Fields,
