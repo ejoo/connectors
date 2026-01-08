@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/amp-labs/connectors/common"
+	"github.com/amp-labs/connectors/common/readhelper"
 	"github.com/amp-labs/connectors/common/urlbuilder"
 	"github.com/amp-labs/connectors/internal/datautils"
 	"github.com/amp-labs/connectors/internal/httpkit"
@@ -16,32 +19,59 @@ import (
 )
 
 const (
-	limitKey   = "limit"
-	limitValue = "200" // Okta maximum per page
-	filterKey  = "filter"
-	sinceKey   = "since"
+	limitKey  = "limit"
+	pageLimit = 200 // Okta maximum per page
+	filterKey = "filter"
+	sinceKey  = "since"
 )
 
+// Objects supporting incremental sync via lastUpdated filter.
+// Reference: https://developer.okta.com/docs/reference/api/users/#list-users
+// Reference: https://developer.okta.com/docs/reference/api/groups/#list-groups
+//
 //nolint:gochecknoglobals
-var objectsWithLastUpdatedFilter = datautils.NewStringSet(
+var objectsWithProviderSideFilter = datautils.NewStringSet(
 	"users",
 	"groups",
 	"apps",
 )
 
+// Objects that support connector-side filtering via lastUpdated field.
+// These objects don't support provider-side filtering but have lastUpdated timestamp.
+//
+//nolint:gochecknoglobals
+var objectsWithConnectorSideFilter = datautils.NewStringSet(
+	"devices",
+	"idps",
+	"authorizationServers",
+	"trustedOrigins",
+	"zones",
+	"authenticators",
+	"policies",
+	"eventHooks",
+)
+
+// responseField returns the JSON path for extracting records.
+// Most Okta endpoints return arrays at root level, except domains.
 func responseField(objectName string) string {
+	// Domains endpoint wraps the array in a "domains" key
 	if objectName == "domains" {
 		return "domains"
 	}
 
+	// Empty string means the response is an array at root level
 	return ""
 }
 
+// buildReadRequest constructs the HTTP request for read operations.
+// Reference: https://developer.okta.com/docs/api/
 func (c *Connector) buildReadRequest(ctx context.Context, params common.ReadParams) (*http.Request, error) {
+	// Use NextPage directly (from Link header) if provided
 	if params.NextPage != "" {
 		return http.NewRequestWithContext(ctx, http.MethodGet, params.NextPage.String(), nil)
 	}
 
+	// Build URL from metadata
 	path, err := metadata.Schemas.LookupURLPath(c.ProviderContext.Module(), params.ObjectName)
 	if err != nil {
 		return nil, err
@@ -52,12 +82,27 @@ func (c *Connector) buildReadRequest(ctx context.Context, params common.ReadPara
 		return nil, err
 	}
 
-	url.WithQueryParam(limitKey, limitValue)
+	// Add pagination limit - use PageSize if provided, otherwise use default
+	pageSize := pageLimit
+	if params.PageSize > 0 {
+		if params.PageSize > pageLimit {
+			pageSize = pageLimit
+		} else {
+			pageSize = params.PageSize
+		}
+	}
 
+	url.WithQueryParam(limitKey, strconv.Itoa(pageSize))
+
+	// Add incremental sync filter based on object type
 	if !params.Since.IsZero() {
 		if params.ObjectName == "logs" {
+			// Logs API uses 'since' query param instead of filter expression
+			// Reference: https://developer.okta.com/docs/reference/api/system-log/#request-parameters
 			url.WithQueryParam(sinceKey, datautils.Time.FormatRFC3339inUTC(params.Since))
-		} else if objectsWithLastUpdatedFilter.Has(params.ObjectName) {
+		} else if objectsWithProviderSideFilter.Has(params.ObjectName) {
+			// Other objects use lastUpdated filter expression
+			// Reference: https://developer.okta.com/docs/reference/api/users/#list-users-with-a-filter
 			filterValue := "lastUpdated gt \"" + datautils.Time.FormatRFC3339inUTC(params.Since) + "\""
 			url.WithQueryParam(filterKey, filterValue)
 		}
@@ -66,32 +111,62 @@ func (c *Connector) buildReadRequest(ctx context.Context, params common.ReadPara
 	return http.NewRequestWithContext(ctx, http.MethodGet, url.String(), nil)
 }
 
+// parseReadResponse parses the HTTP response from read operations.
+// Okta uses Link headers for pagination (cursor-based).
+// Reference: https://developer.okta.com/docs/api/#pagination
 func (c *Connector) parseReadResponse(
 	ctx context.Context,
 	params common.ReadParams,
 	request *http.Request,
 	response *common.JSONHTTPResponse,
 ) (*common.ReadResult, error) {
-	return common.ParseResult(
+	return common.ParseResultFiltered(
+		params,
 		response,
-		common.ExtractRecordsFromPath(responseField(params.ObjectName)),
-		makeNextRecordsURL(response.Headers),
-		common.GetMarshaledData,
+		common.MakeRecordsFunc(responseField(params.ObjectName)),
+		makeFilterFunc(params, response.Headers),
+		common.MakeMarshaledDataFunc(nil),
 		params.Fields,
 	)
 }
 
+// makeFilterFunc returns the appropriate filter function based on object type.
+// Objects with provider-side filtering (users, groups, apps, logs) don't need connector-side filtering.
+// Objects with lastUpdated field but no provider-side support use connector-side filtering.
+func makeFilterFunc(params common.ReadParams, headers http.Header) common.RecordsFilterFunc {
+	nextPageFunc := makeNextRecordsURL(headers)
+
+	// Objects with provider-side filtering don't need connector-side filtering
+	if objectsWithProviderSideFilter.Has(params.ObjectName) || params.ObjectName == "logs" {
+		return readhelper.MakeIdentityFilterFunc(nextPageFunc)
+	}
+
+	// Objects without any timestamp field - no filtering possible
+	if !objectsWithConnectorSideFilter.Has(params.ObjectName) {
+		return readhelper.MakeIdentityFilterFunc(nextPageFunc)
+	}
+
+	// Apply connector-side filtering using lastUpdated field
+	return readhelper.MakeTimeFilterFunc(
+		readhelper.ChronologicalOrder,
+		readhelper.NewTimeBoundary(),
+		"lastUpdated",
+		time.RFC3339,
+		nextPageFunc,
+	)
+}
+
+// makeNextRecordsURL extracts the next page URL from Link header.
+// Okta uses Link headers with rel="next" for pagination.
+// Reference: https://developer.okta.com/docs/api/#link-header
 func makeNextRecordsURL(responseHeaders http.Header) common.NextPageFunc {
 	return func(node *ajson.Node) (string, error) {
-		nextURL := httpkit.HeaderLink(&common.JSONHTTPResponse{Headers: responseHeaders}, "next")
-		if nextURL == "" {
-			return "", nil
-		}
-
-		return nextURL, nil
+		return httpkit.HeaderLink(&common.JSONHTTPResponse{Headers: responseHeaders}, "next"), nil
 	}
 }
 
+// buildWriteRequest constructs the HTTP request for write operations.
+// POST is used for creates, PUT for updates (except users which use POST for partial updates).
 func (c *Connector) buildWriteRequest(ctx context.Context, params common.WriteParams) (*http.Request, error) {
 	path, err := metadata.Schemas.LookupURLPath(c.ProviderContext.Module(), params.ObjectName)
 	if err != nil {
@@ -130,6 +205,7 @@ func (c *Connector) buildWriteRequest(ctx context.Context, params common.WritePa
 	return req, nil
 }
 
+// parseWriteResponse parses the HTTP response from write operations.
 func (c *Connector) parseWriteResponse(
 	ctx context.Context,
 	params common.WriteParams,
@@ -160,6 +236,7 @@ func (c *Connector) parseWriteResponse(
 	}, nil
 }
 
+// buildDeleteRequest constructs the HTTP request for delete operations.
 func (c *Connector) buildDeleteRequest(ctx context.Context, params common.DeleteParams) (*http.Request, error) {
 	path, err := metadata.Schemas.LookupURLPath(c.ProviderContext.Module(), params.ObjectName)
 	if err != nil {
@@ -181,6 +258,7 @@ func (c *Connector) buildDeleteRequest(ctx context.Context, params common.Delete
 	return req, nil
 }
 
+// parseDeleteResponse parses the HTTP response from delete operations.
 func (c *Connector) parseDeleteResponse(
 	ctx context.Context,
 	params common.DeleteParams,

@@ -17,7 +17,7 @@ type Connector struct {
 	// Require authenticated client
 	common.RequireAuthenticatedClient
 	common.RequireWorkspace
-	components.SchemaProviderl
+	components.SchemaProvider
 	components.Reader
 	components.Writer
 }

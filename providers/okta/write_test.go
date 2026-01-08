@@ -18,7 +18,7 @@ func TestWrite(t *testing.T) {
 	updateUserResponse := testutils.DataFromFile(t, "write-user-update.json")
 	createGroupResponse := testutils.DataFromFile(t, "write-group-create.json")
 	updateGroupResponse := testutils.DataFromFile(t, "write-group-update.json")
-	errorResponse := testutils.DataFromFile(t, "read-error.json")
+	errorResponse := testutils.DataFromFile(t, "error.json")
 
 	tests := []testroutines.Write{
 		{

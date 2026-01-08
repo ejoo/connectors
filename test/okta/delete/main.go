@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -10,6 +9,7 @@ import (
 	"github.com/amp-labs/connectors/common"
 	"github.com/amp-labs/connectors/providers/okta"
 	connTest "github.com/amp-labs/connectors/test/okta"
+	"github.com/amp-labs/connectors/test/utils"
 	"github.com/brianvoe/gofakeit/v6"
 )
 
@@ -90,13 +90,7 @@ func testDeleteGroup(ctx context.Context, conn *okta.Connector, groupID string) 
 		return fmt.Errorf("failed to delete group: %w", err)
 	}
 
-	jsonStr, err := json.MarshalIndent(res, "", "  ")
-	if err != nil {
-		return fmt.Errorf("error marshalling JSON: %w", err)
-	}
-
-	_, _ = os.Stdout.Write(jsonStr)
-	_, _ = os.Stdout.WriteString("\n")
+	utils.DumpJSON(res, os.Stdout)
 
 	slog.Info("Group deleted successfully")
 
@@ -143,13 +137,7 @@ func testDeleteUser(ctx context.Context, conn *okta.Connector, userID string, st
 		return fmt.Errorf("failed to delete user (%s): %w", stage, err)
 	}
 
-	jsonStr, err := json.MarshalIndent(res, "", "  ")
-	if err != nil {
-		return fmt.Errorf("error marshalling JSON: %w", err)
-	}
-
-	_, _ = os.Stdout.Write(jsonStr)
-	_, _ = os.Stdout.WriteString("\n")
+	utils.DumpJSON(res, os.Stdout)
 
 	slog.Info("User delete successful", "stage", stage)
 

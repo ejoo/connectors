@@ -40,19 +40,16 @@ func NewConnector(params common.ConnectorParams) (*Connector, error) {
 func constructor(base *components.Connector) (*Connector, error) {
 	connector := &Connector{Connector: base}
 
+	// Set the metadata provider for the connector
 	connector.SchemaProvider = schema.NewOpenAPISchemaProvider(
 		connector.ProviderContext.Module(),
 		metadata.Schemas,
 	)
 
-	registry, err := components.NewEndpointRegistry(supportedOperations())
-	if err != nil {
-		return nil, err
-	}
-
+	// Add Reader for read operations
 	connector.Reader = reader.NewHTTPReader(
 		connector.HTTPClient().Client,
-		registry,
+		components.NewEmptyEndpointRegistry(),
 		connector.ProviderContext.Module(),
 		operations.ReadHandlers{
 			BuildRequest:  connector.buildReadRequest,
@@ -61,9 +58,10 @@ func constructor(base *components.Connector) (*Connector, error) {
 		},
 	)
 
+	// Add Writer for write operations
 	connector.Writer = writer.NewHTTPWriter(
 		connector.HTTPClient().Client,
-		registry,
+		components.NewEmptyEndpointRegistry(),
 		connector.ProviderContext.Module(),
 		operations.WriteHandlers{
 			BuildRequest:  connector.buildWriteRequest,
@@ -72,9 +70,10 @@ func constructor(base *components.Connector) (*Connector, error) {
 		},
 	)
 
+	// Add Deleter for delete operations
 	connector.Deleter = deleter.NewHTTPDeleter(
 		connector.HTTPClient().Client,
-		registry,
+		components.NewEmptyEndpointRegistry(),
 		connector.ProviderContext.Module(),
 		operations.DeleteHandlers{
 			BuildRequest:  connector.buildDeleteRequest,
