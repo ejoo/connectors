@@ -18,7 +18,7 @@ func TestRead(t *testing.T) {
 	responseUsers := testutils.DataFromFile(t, "read-users.json")
 	responseGroups := testutils.DataFromFile(t, "read-groups.json")
 	responseApps := testutils.DataFromFile(t, "read-apps.json")
-	errorResponse := testutils.DataFromFile(t, "read-error.json")
+	errorResponse := testutils.DataFromFile(t, "error.json")
 
 	tests := []testroutines.Read{
 		{
