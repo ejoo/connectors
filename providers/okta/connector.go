@@ -6,6 +6,8 @@
 package okta
 
 import (
+	"context"
+
 	"github.com/amp-labs/connectors/common"
 	"github.com/amp-labs/connectors/internal/components"
 	"github.com/amp-labs/connectors/internal/components/deleter"
@@ -83,4 +85,50 @@ func constructor(base *components.Connector) (*Connector, error) {
 	)
 
 	return connector, nil
+}
+
+// ListObjectMetadata returns metadata for the requested objects, including custom fields.
+// Custom fields are fetched from the Schema API for users and groups.
+// Reference: https://developer.okta.com/docs/reference/api/schemas
+func (c *Connector) ListObjectMetadata(
+	ctx context.Context, objectNames []string,
+) (*common.ListObjectMetadataResult, error) {
+	metadataResult, err := metadata.Schemas.Select(c.ProviderContext.Module(), objectNames)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, objectName := range objectNames {
+		customFields, err := c.requestCustomFields(ctx, objectName)
+		if err != nil {
+			metadataResult.Errors[objectName] = err
+
+			continue
+		}
+
+		objectMetadata, ok := metadataResult.Result[objectName]
+		if !ok {
+			continue
+		}
+
+		// Add custom fields to object metadata
+		for _, field := range customFields {
+			// Use the field name as the key (human-readable)
+			displayName := field.Title
+			if displayName == "" {
+				displayName = field.Name
+			}
+
+			objectMetadata.AddFieldMetadata(field.Name, common.FieldMetadata{
+				DisplayName:  displayName,
+				ValueType:    field.getValueType(),
+				ProviderType: field.Type,
+				Values:       field.getValues(),
+			})
+		}
+
+		metadataResult.Result[objectName] = objectMetadata
+	}
+
+	return metadataResult, nil
 }

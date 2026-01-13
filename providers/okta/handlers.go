@@ -113,6 +113,7 @@ func (c *Connector) buildReadRequest(ctx context.Context, params common.ReadPara
 
 // parseReadResponse parses the HTTP response from read operations.
 // Okta uses Link headers for pagination (cursor-based).
+// Custom profile fields are flattened to root level for users and groups.
 // Reference: https://developer.okta.com/docs/api/#pagination
 func (c *Connector) parseReadResponse(
 	ctx context.Context,
@@ -120,12 +121,19 @@ func (c *Connector) parseReadResponse(
 	request *http.Request,
 	response *common.JSONHTTPResponse,
 ) (*common.ReadResult, error) {
+	// Use flattenProfileFields for objects with profile data (users, groups)
+	// This moves custom fields from profile.{field} to root level
+	var transformer common.RecordTransformer
+	if objectsWithCustomFields.Has(params.ObjectName) {
+		transformer = flattenProfileFields
+	}
+
 	return common.ParseResultFiltered(
 		params,
 		response,
 		common.MakeRecordsFunc(responseField(params.ObjectName)),
 		makeFilterFunc(params, response.Headers),
-		common.MakeMarshaledDataFunc(nil),
+		common.MakeMarshaledDataFunc(transformer),
 		params.Fields,
 	)
 }
