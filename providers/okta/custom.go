@@ -3,6 +3,7 @@ package okta
 import (
 	"context"
 	"errors"
+	"maps"
 
 	"github.com/amp-labs/connectors/common"
 	"github.com/amp-labs/connectors/common/urlbuilder"
@@ -232,9 +233,7 @@ func flattenProfileFields(node *ajson.Node) (map[string]any, error) {
 	}
 
 	// Move all profile fields to root level for easier field access
-	for key, value := range profile {
-		root[key] = value
-	}
+	maps.Copy(root, profile)
 
 	return root, nil
 }

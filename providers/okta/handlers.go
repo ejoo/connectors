@@ -85,11 +85,7 @@ func (c *Connector) buildReadRequest(ctx context.Context, params common.ReadPara
 	// Add pagination limit - use PageSize if provided, otherwise use default
 	pageSize := pageLimit
 	if params.PageSize > 0 {
-		if params.PageSize > pageLimit {
-			pageSize = pageLimit
-		} else {
-			pageSize = params.PageSize
-		}
+		pageSize = min(params.PageSize, pageLimit)
 	}
 
 	url.WithQueryParam(limitKey, strconv.Itoa(pageSize))

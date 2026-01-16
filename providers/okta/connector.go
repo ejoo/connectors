@@ -111,6 +111,15 @@ func (c *Connector) ListObjectMetadata(
 			continue
 		}
 
+		// Ensure maps are initialized to prevent panic when adding fields.
+		if objectMetadata.Fields == nil {
+			objectMetadata.Fields = make(common.FieldsMetadata)
+		}
+
+		if objectMetadata.FieldsMap == nil { //nolint:staticcheck
+			objectMetadata.FieldsMap = make(map[string]string) //nolint:staticcheck
+		}
+
 		// Add custom fields to object metadata
 		for _, field := range customFields {
 			// Use the field name as the key (human-readable)
