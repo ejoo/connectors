@@ -129,12 +129,21 @@ func getRecords(responseKey string) common.NodeRecordsFunc {
 }
 
 // getSingleObjectAsArray wraps a single object response in an array.
+// Handles the common SuperSend pattern where single object responses are wrapped
+// in a "data" key (e.g., /org returns {"data": {...}, "success": true}).
 func getSingleObjectAsArray(node *ajson.Node) ([]*ajson.Node, error) {
-	if node.IsObject() {
-		return []*ajson.Node{node}, nil
+	if !node.IsObject() {
+		return nil, jsonquery.ErrNotArray
 	}
 
-	return nil, jsonquery.ErrNotArray
+	// Check if the response has a "data" key containing the actual object
+	dataNode, err := jsonquery.New(node).ObjectOptional("data")
+	if err == nil && dataNode != nil {
+		return []*ajson.Node{dataNode}, nil
+	}
+
+	// Otherwise return the whole node as a single object
+	return []*ajson.Node{node}, nil
 }
 
 // getNestedRecords traverses a nested responseKey (dot-notation) to extract records.
