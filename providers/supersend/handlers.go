@@ -1,7 +1,10 @@
 package supersend
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -19,6 +22,7 @@ import (
 // Pagination constants for SuperSend API.
 // SuperSend uses offset-based pagination with limit/offset query parameters.
 // The API returns pagination.has_more to indicate if more records exist.
+// See: https://documenter.getpostman.com/view/19579115/2sA3kSo3FD
 const (
 	defaultPageSize = "100" // Default page size for SuperSend API (max is 100)
 	limitParam      = "limit"
@@ -28,8 +32,55 @@ const (
 	// SuperSend API doesn't support native time-based filtering, so we filter
 	// records client-side using the updatedAt field for incremental sync.
 	// Format: ISO 8601 / RFC3339 (e.g., "2024-01-15T10:00:00.000Z").
+	// See: https://documenter.getpostman.com/view/19579115/2sA3kSo3FD
 	updatedAtField = "updatedAt"
 )
+
+// writePathConfig defines the write/delete path configuration for each object.
+// SuperSend API uses different paths for read vs write/delete operations.
+// See: https://documenter.getpostman.com/view/19579115/2sA3kSo3FD
+type writePathConfig struct {
+	createPath string // Path for POST (create) - without record ID
+	updatePath string // Path for PUT (update) - record ID will be appended
+	deletePath string // Path for DELETE - record ID will be appended
+	usesPatch  bool   // Whether to use PATCH instead of PUT for updates
+}
+
+// objectWritePaths maps object names to their write/delete path configurations.
+// nolint:gochecknoglobals
+var objectWritePaths = map[string]writePathConfig{
+	"labels": {
+		createPath: "/v1/labels",
+		updatePath: "/v1/labels",
+		deletePath: "/v1/labels",
+	},
+	"senders": {
+		createPath: "/v1/sender",
+		updatePath: "/v1/sender",
+		deletePath: "", // No delete endpoint for senders
+	},
+	"teams": {
+		createPath: "/v2/teams",
+		updatePath: "", // No update endpoint documented
+		deletePath: "", // No delete endpoint documented
+	},
+	"campaigns": {
+		createPath: "/v1/auto/campaign",
+		updatePath: "/v1/campaign",
+		deletePath: "/v1/auto/campaign",
+	},
+	"contacts": {
+		createPath: "/v2/contacts",
+		updatePath: "/v2/contacts",
+		deletePath: "/v2/contacts",
+		usesPatch:  true, // V2 API uses PATCH for updates
+	},
+	"sender-profiles": {
+		createPath: "/v1/sender-profile",
+		updatePath: "/v1/sender-profile",
+		deletePath: "/v1/sender-profile",
+	},
+}
 
 // buildReadRequest constructs the HTTP request for read operations.
 // Handles pagination via offset parameter and respects PageSize up to max limit.
@@ -252,4 +303,151 @@ func buildNextPageURL(baseURL string, requestURL *url.URL, nextOffset int) (stri
 	}
 
 	return nextURL.String(), nil
+}
+
+// buildWriteRequest constructs the HTTP request for write operations.
+// Uses POST for create (no RecordId) and PUT/PATCH for update (with RecordId).
+// SuperSend API uses different paths for write vs read operations.
+// See: https://documenter.getpostman.com/view/19579115/2sA3kSo3FD
+func (c *Connector) buildWriteRequest(ctx context.Context, params common.WriteParams) (*http.Request, error) {
+	config, ok := objectWritePaths[params.ObjectName]
+	if !ok {
+		return nil, common.ErrOperationNotSupportedForObject
+	}
+
+	apiURL, method, err := c.buildWriteURL(params, config)
+	if err != nil {
+		return nil, err
+	}
+
+	jsonData, err := json.Marshal(params.RecordData)
+	if err != nil {
+		return nil, err
+	}
+
+	return http.NewRequestWithContext(ctx, method, apiURL.String(), bytes.NewReader(jsonData))
+}
+
+// buildWriteURL constructs the URL and HTTP method for write operations.
+func (c *Connector) buildWriteURL(params common.WriteParams, config writePathConfig) (*urlbuilder.URL, string, error) {
+	if params.IsUpdate() {
+		return c.buildUpdateURL(params, config)
+	}
+
+	return c.buildCreateURL(config)
+}
+
+// buildUpdateURL constructs the URL and method for update operations.
+func (c *Connector) buildUpdateURL(params common.WriteParams, config writePathConfig) (*urlbuilder.URL, string, error) {
+	if config.updatePath == "" {
+		return nil, "", common.ErrOperationNotSupportedForObject
+	}
+
+	apiURL, err := urlbuilder.New(c.ProviderInfo().BaseURL, config.updatePath, params.RecordId)
+	if err != nil {
+		return nil, "", err
+	}
+
+	method := http.MethodPut
+	if config.usesPatch {
+		method = http.MethodPatch
+	}
+
+	return apiURL, method, nil
+}
+
+// buildCreateURL constructs the URL and method for create operations.
+func (c *Connector) buildCreateURL(config writePathConfig) (*urlbuilder.URL, string, error) {
+	if config.createPath == "" {
+		return nil, "", common.ErrOperationNotSupportedForObject
+	}
+
+	apiURL, err := urlbuilder.New(c.ProviderInfo().BaseURL, config.createPath)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return apiURL, http.MethodPost, nil
+}
+
+// parseWriteResponse parses the response from write operations.
+// SuperSend returns responses wrapped in a "data" key with a "success" field.
+func (c *Connector) parseWriteResponse(
+	ctx context.Context,
+	params common.WriteParams,
+	request *http.Request,
+	response *common.JSONHTTPResponse,
+) (*common.WriteResult, error) {
+	body, ok := response.Body()
+	if !ok {
+		return &common.WriteResult{
+			Success: true,
+		}, nil
+	}
+
+	// SuperSend wraps responses in "data" key
+	dataNode, err := jsonquery.New(body).ObjectOptional("data")
+	if err != nil {
+		return nil, err
+	}
+
+	// Use the data node if available, otherwise use the body directly
+	responseNode := body
+	if dataNode != nil {
+		responseNode = dataNode
+	}
+
+	// Extract record ID from response
+	recordID, err := jsonquery.New(responseNode).StringOptional("id")
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := jsonquery.Convertor.ObjectToMap(responseNode)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &common.WriteResult{
+		Success: true,
+		Data:    data,
+	}
+
+	if recordID != nil {
+		result.RecordId = *recordID
+	}
+
+	return result, nil
+}
+
+// buildDeleteRequest constructs the HTTP request for delete operations.
+func (c *Connector) buildDeleteRequest(ctx context.Context, params common.DeleteParams) (*http.Request, error) {
+	config, ok := objectWritePaths[params.ObjectName]
+	if !ok || config.deletePath == "" {
+		return nil, common.ErrOperationNotSupportedForObject
+	}
+
+	apiURL, err := urlbuilder.New(c.ProviderInfo().BaseURL, config.deletePath, params.RecordId)
+	if err != nil {
+		return nil, err
+	}
+
+	return http.NewRequestWithContext(ctx, http.MethodDelete, apiURL.String(), nil)
+}
+
+// parseDeleteResponse parses the response from delete operations.
+func (c *Connector) parseDeleteResponse(
+	ctx context.Context,
+	params common.DeleteParams,
+	request *http.Request,
+	response *common.JSONHTTPResponse,
+) (*common.DeleteResult, error) {
+	// Validate HTTP status code for delete operations
+	if response.Code != http.StatusOK && response.Code != http.StatusNoContent {
+		return nil, fmt.Errorf("%w: failed to delete record: %d", common.ErrRequestFailed, response.Code)
+	}
+
+	return &common.DeleteResult{
+		Success: true,
+	}, nil
 }
