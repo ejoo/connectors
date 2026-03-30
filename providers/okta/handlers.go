@@ -184,7 +184,7 @@ func (c *Connector) buildWriteRequest(ctx context.Context, params common.WritePa
 
 	method := http.MethodPost
 
-	if params.RecordId != "" {
+	if params.IsUpdate() {
 		url.AddPath(params.RecordId)
 
 		// Users use POST for partial updates, other objects use PUT for full replacement.
