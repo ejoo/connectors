@@ -1,7 +1,9 @@
 package okta
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/amp-labs/connectors/common/urlbuilder"
 	"github.com/amp-labs/connectors/internal/datautils"
 	"github.com/amp-labs/connectors/internal/httpkit"
+	"github.com/amp-labs/connectors/internal/jsonquery"
 	"github.com/amp-labs/connectors/providers/okta/metadata"
 	"github.com/spyzhov/ajson"
 )
@@ -82,11 +85,7 @@ func (c *Connector) buildReadRequest(ctx context.Context, params common.ReadPara
 	// Add pagination limit - use PageSize if provided, otherwise use default
 	pageSize := pageLimit
 	if params.PageSize > 0 {
-		if params.PageSize > pageLimit {
-			pageSize = pageLimit
-		} else {
-			pageSize = params.PageSize
-		}
+		pageSize = params.PageSize
 	}
 
 	url.WithQueryParam(limitKey, strconv.Itoa(pageSize))
@@ -110,6 +109,7 @@ func (c *Connector) buildReadRequest(ctx context.Context, params common.ReadPara
 
 // parseReadResponse parses the HTTP response from read operations.
 // Okta uses Link headers for pagination (cursor-based).
+// Custom profile fields are flattened to root level for users and groups.
 // Reference: https://developer.okta.com/docs/api/#pagination
 func (c *Connector) parseReadResponse(
 	ctx context.Context,
@@ -117,12 +117,19 @@ func (c *Connector) parseReadResponse(
 	request *http.Request,
 	response *common.JSONHTTPResponse,
 ) (*common.ReadResult, error) {
+	// Use flattenProfileFields for objects with profile data (users, groups)
+	// This moves custom fields from profile.{field} to root level
+	var transformer common.RecordTransformer
+	if objectsWithCustomFields.Has(params.ObjectName) {
+		transformer = flattenProfileFields
+	}
+
 	return common.ParseResultFiltered(
 		params,
 		response,
 		common.MakeRecordsFunc(responseField(params.ObjectName)),
 		makeFilterFunc(params, response.Headers),
-		common.MakeMarshaledDataFunc(nil),
+		common.MakeMarshaledDataFunc(transformer),
 		params.Fields,
 	)
 }
@@ -160,4 +167,109 @@ func makeNextRecordsURL(responseHeaders http.Header) common.NextPageFunc {
 	return func(node *ajson.Node) (string, error) {
 		return httpkit.HeaderLink(&common.JSONHTTPResponse{Headers: responseHeaders}, "next"), nil
 	}
+}
+
+// buildWriteRequest constructs the HTTP request for write operations.
+// POST is used for creates, PUT for updates (except users which use POST for partial updates).
+func (c *Connector) buildWriteRequest(ctx context.Context, params common.WriteParams) (*http.Request, error) {
+	path, err := metadata.Schemas.LookupURLPath(c.ProviderContext.Module(), params.ObjectName)
+	if err != nil {
+		return nil, err
+	}
+
+	url, err := urlbuilder.New(c.ProviderInfo().BaseURL, path)
+	if err != nil {
+		return nil, err
+	}
+
+	method := http.MethodPost
+
+	if params.IsUpdate() {
+		url.AddPath(params.RecordId)
+
+		// Users use POST for partial updates, other objects use PUT for full replacement.
+		if params.ObjectName != "users" {
+			method = http.MethodPut
+		}
+	}
+
+	jsonData, err := json.Marshal(params.RecordData)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, url.String(), bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	return req, nil
+}
+
+// parseWriteResponse parses the HTTP response from write operations.
+func (c *Connector) parseWriteResponse(
+	ctx context.Context,
+	params common.WriteParams,
+	request *http.Request,
+	response *common.JSONHTTPResponse,
+) (*common.WriteResult, error) {
+	body, ok := response.Body()
+	if !ok {
+		return &common.WriteResult{
+			Success: true,
+		}, nil
+	}
+
+	recordID, err := jsonquery.New(body).TextWithDefault("id", params.RecordId)
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := jsonquery.Convertor.ObjectToMap(body)
+	if err != nil {
+		return nil, err
+	}
+
+	return &common.WriteResult{
+		Success:  true,
+		RecordId: recordID,
+		Data:     data,
+	}, nil
+}
+
+// buildDeleteRequest constructs the HTTP request for delete operations.
+func (c *Connector) buildDeleteRequest(ctx context.Context, params common.DeleteParams) (*http.Request, error) {
+	path, err := metadata.Schemas.LookupURLPath(c.ProviderContext.Module(), params.ObjectName)
+	if err != nil {
+		return nil, err
+	}
+
+	url, err := urlbuilder.New(c.ProviderInfo().BaseURL, path, params.RecordId)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Accept", "application/json")
+
+	return req, nil
+}
+
+// parseDeleteResponse parses the HTTP response from delete operations.
+func (c *Connector) parseDeleteResponse(
+	ctx context.Context,
+	params common.DeleteParams,
+	request *http.Request,
+	response *common.JSONHTTPResponse,
+) (*common.DeleteResult, error) {
+	return &common.DeleteResult{
+		Success: true,
+	}, nil
 }
