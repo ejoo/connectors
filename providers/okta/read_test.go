@@ -12,12 +12,14 @@ import (
 	"github.com/amp-labs/connectors/test/utils/testutils"
 )
 
-func TestRead(t *testing.T) {
+func TestRead(t *testing.T) { //nolint:funlen
 	t.Parallel()
 
 	responseUsers := testutils.DataFromFile(t, "read-users.json")
 	responseGroups := testutils.DataFromFile(t, "read-groups.json")
 	responseApps := testutils.DataFromFile(t, "read-apps.json")
+	responseUsersWithCustomFields := testutils.DataFromFile(t, "read-users-with-custom-fields.json")
+	responseGroupsWithCustomFields := testutils.DataFromFile(t, "read-groups-with-custom-fields.json")
 	errorResponse := testutils.DataFromFile(t, "error.json")
 
 	tests := []testroutines.Read{
@@ -251,6 +253,94 @@ func TestRead(t *testing.T) {
 				Always: mockserver.Response(http.StatusBadRequest, errorResponse),
 			}.Server(),
 			ExpectedErrs: []error{common.ErrCaller},
+		},
+		{
+			Name: "Read users with custom fields flattened from profile",
+			Input: common.ReadParams{
+				ObjectName: "users",
+				// Custom field test_custom_field is flattened from profile to root level
+				Fields: connectors.Fields("id", "email", "firstName", "test_custom_field"),
+			},
+			Server: mockserver.Fixed{
+				Setup:  mockserver.ContentJSON(),
+				Always: mockserver.Response(http.StatusOK, responseUsersWithCustomFields),
+			}.Server(),
+			Comparator: testroutines.ComparatorSubsetRead,
+			Expected: &common.ReadResult{
+				Rows: 2,
+				Data: []common.ReadResultRow{
+					{
+						Fields: map[string]any{
+							"id":                "00u1234567890abcdef",
+							"email":             "john.doe@example.com",
+							"firstname":         "John",
+							"test_custom_field": "custom_value_1",
+						},
+						Raw: map[string]any{
+							"id":     "00u1234567890abcdef",
+							"status": "ACTIVE",
+						},
+					},
+					{
+						Fields: map[string]any{
+							"id":                "00u9876543210zyxwvu",
+							"email":             "jane.smith@example.com",
+							"firstname":         "Jane",
+							"test_custom_field": "custom_value_2",
+						},
+						Raw: map[string]any{
+							"id":     "00u9876543210zyxwvu",
+							"status": "PROVISIONED",
+						},
+					},
+				},
+				Done: true,
+			},
+			ExpectedErrs: nil,
+		},
+		{
+			Name: "Read groups with custom fields flattened from profile",
+			Input: common.ReadParams{
+				ObjectName: "groups",
+				// Custom field test_custom_field_group is flattened from profile to root level
+				Fields: connectors.Fields("id", "name", "description", "test_custom_field_group"),
+			},
+			Server: mockserver.Fixed{
+				Setup:  mockserver.ContentJSON(),
+				Always: mockserver.Response(http.StatusOK, responseGroupsWithCustomFields),
+			}.Server(),
+			Comparator: testroutines.ComparatorSubsetRead,
+			Expected: &common.ReadResult{
+				Rows: 2,
+				Data: []common.ReadResultRow{
+					{
+						Fields: map[string]any{
+							"id":                      "00g1234567890abcdef",
+							"name":                    "Engineering",
+							"description":             "Engineering team members",
+							"test_custom_field_group": "engineering_custom",
+						},
+						Raw: map[string]any{
+							"id":   "00g1234567890abcdef",
+							"type": "OKTA_GROUP",
+						},
+					},
+					{
+						Fields: map[string]any{
+							"id":                      "00g9876543210zyxwvu",
+							"name":                    "Marketing",
+							"description":             "Marketing team members",
+							"test_custom_field_group": "marketing_custom",
+						},
+						Raw: map[string]any{
+							"id":   "00g9876543210zyxwvu",
+							"type": "OKTA_GROUP",
+						},
+					},
+				},
+				Done: true,
+			},
+			ExpectedErrs: nil,
 		},
 	}
 
