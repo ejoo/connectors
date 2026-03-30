@@ -82,13 +82,7 @@ func (c *Connector) buildReadRequest(ctx context.Context, params common.ReadPara
 		return nil, err
 	}
 
-	// Add pagination limit - use PageSize if provided, otherwise use default
-	pageSize := pageLimit
-	if params.PageSize > 0 {
-		pageSize = params.PageSize
-	}
-
-	url.WithQueryParam(limitKey, strconv.Itoa(pageSize))
+	url.WithQueryParam(limitKey, readhelper.PageSizeWithDefaultStr(params, strconv.Itoa(pageLimit)))
 
 	// Add incremental sync filter based on object type
 	if !params.Since.IsZero() {
